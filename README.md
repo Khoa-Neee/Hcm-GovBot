@@ -1,4 +1,4 @@
-# HCM GovBot
+# HCM GovBot - Automated QA System for Administrative Procedures in HCMC
 
 Web app tra cứu, thống kê và hỏi đáp thủ tục hành chính công cho người dân Thành phố Hồ Chí Minh.
 
