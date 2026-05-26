@@ -693,7 +693,7 @@ function ChatView() {
               </div>
             ))}
             {chatError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{chatError}</div>}
-            {loading && <LoadingBlock label={`AI đang đọc thủ tục liên quan, có thể mất khoảng 30s... ${elapsedSeconds}s`} />}
+            {loading && <LoadingBlock label={`AI đang đọc thủ tục liên quan, có thể mất khoảng 15s... ${elapsedSeconds}s`} />}
             {searching && <LoadingBlock label="Đang tìm bằng pgvector..." />}
           </div>
         </div>

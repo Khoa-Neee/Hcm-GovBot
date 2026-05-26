@@ -231,7 +231,7 @@ class DvcClient:
             name=str(row.get("PROCEDURE_NAME") or ""),
             field_name=row.get("FIELD_NAME"),
             published_agency=row.get("PUBLISHED_AGENCY"),
-            implementation_agency=row.get("IMPLEMENTATION_AGENCY"),
+            implementation_agency=self._dedupe_semicolon_list(row.get("IMPLEMENTATION_AGENCY")),
             source_url=urljoin(
                 self.settings.dvc_base_url,
                 f"/p/home/{detail_slug}?ma_thu_tuc={source_id}",
@@ -424,6 +424,24 @@ class DvcClient:
 
     def _clean_text(self, value: str) -> str:
         return re.sub(r"\s+", " ", unescape(value)).strip()
+
+    def _dedupe_semicolon_list(self, value: Any) -> str | None:
+        if value is None:
+            return None
+
+        parts = [self._clean_text(part) for part in str(value).split(";")]
+        unique_parts: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            if not part:
+                continue
+            key = re.sub(r"\s*-\s*", " - ", part).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_parts.append(part)
+
+        return "; ".join(unique_parts) if unique_parts else None
 
     def _clean_html(self, value: str) -> str:
         soup = BeautifulSoup(str(value), "html.parser")
