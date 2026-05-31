@@ -27,6 +27,7 @@ RETRIEVAL_RERANK_TOP_N=8
 
 BM25_TOKENIZER=underthesea
 BM25_CACHE_PATH=.rag_cache/bm25_cache.pkl
+BM25_ALLOW_LIVE_BUILD=false
 CHUNK_TOKEN_LIMIT=512
 CHUNK_OVERLAP_TOKENS=50
 ```
@@ -179,7 +180,7 @@ crawl DVCQG
   -> update Supabase procedures
   -> rag-build procedure_documents/procedure_chunks
   -> pinecone-sync vectors
-  -> bm25-build-cache
+  -> bm25-build-cache neu SCHEDULER_BM25_SYNC_ENABLED=true
 ```
 
 Bat trong `.env`:
@@ -189,6 +190,7 @@ SCHEDULER_ENABLED=true
 SCHEDULER_INTERVAL_HOURS=24
 SCHEDULER_RUN_ON_STARTUP=false
 SCHEDULER_RAG_SYNC_ENABLED=true
+SCHEDULER_BM25_SYNC_ENABLED=false
 SCHEDULER_PINECONE_BATCH_SIZE=32
 SCHEDULER_RAG_PROGRESS_EVERY=100
 ```
@@ -196,8 +198,9 @@ SCHEDULER_RAG_PROGRESS_EVERY=100
 Luu y:
 
 - Neu `SCHEDULER_RUN_ON_STARTUP=true`, backend se chay pipeline sau khi start vai giay. Pipeline co the rat lau vi Pinecone embedding local.
-- Neu chi muon crawl vao Supabase ma khong update RAG/Pinecone/BM25, de `SCHEDULER_RAG_SYNC_ENABLED=false`.
-- Sau khi scheduler build lai BM25 cache, backend cung refresh BM25 trong RAM cho cac cau hoi sau.
+- Render free 512MB RAM khong nen build BM25 cache trong scheduler. Giu `SCHEDULER_BM25_SYNC_ENABLED=false`.
+- Neu chi muon crawl vao Supabase ma khong update RAG/Pinecone, de `SCHEDULER_RAG_SYNC_ENABLED=false`.
+- Neu co may/plan du RAM va bat `SCHEDULER_BM25_SYNC_ENABLED=true`, scheduler se build lai BM25 cache va refresh BM25 trong RAM cho cac cau hoi sau.
 
 ## 10. Cac Loi Thuong Gap
 

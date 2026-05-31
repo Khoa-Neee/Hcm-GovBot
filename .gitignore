@@ -18,8 +18,8 @@ build/
 
 .chroma/
 chroma/
-.rag_cache/
-apps/api/.rag_cache/
+# .rag_cache/
+# apps/api/.rag_cache/
 
 .DS_Store
 Thumbs.db
@@ -28,6 +28,4 @@ Thumbs.db
 
 SECRET.md
 
-supabase/*
-!supabase/migrations/
-!supabase/migrations/*.sql
+supabase/

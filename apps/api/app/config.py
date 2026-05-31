@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     reranker_max_latency_seconds: float = 2.0
     bm25_tokenizer: str = "underthesea"
     bm25_cache_path: str = ".rag_cache/bm25_cache.pkl"
+    bm25_allow_live_build: bool = False
     chat_retrieve_every_turn: bool = True
     chat_rewrite_when_ambiguous: bool = True
     scheduler_enabled: bool = False
@@ -77,6 +78,7 @@ class Settings(BaseSettings):
     scheduler_mark_inactive: bool = True
     scheduler_vector_force: bool = False
     scheduler_rag_sync_enabled: bool = False
+    scheduler_bm25_sync_enabled: bool = False
     scheduler_pinecone_batch_size: int = 32
     scheduler_rag_progress_every: int = 100
 

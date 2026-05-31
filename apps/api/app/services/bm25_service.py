@@ -89,6 +89,17 @@ class BM25Service:
             corpus = cached["tokenized_corpus"]
             source = "cache"
         else:
+            if not self.settings.bm25_allow_live_build:
+                print(
+                    f"[bm25] cache not found at {self._cache_path()}, lexical search disabled",
+                    flush=True,
+                )
+                self._chunks = []
+                self._model = None
+                _BM25_CACHE["chunks"] = []
+                _BM25_CACHE["model"] = None
+                _BM25_CACHE["count"] = 0
+                return
             self._chunks = self.repo.list_active_chunks()
             corpus = [self._tokenize(chunk.get("chunk_text") or chunk.get("chunk_markdown") or "") for chunk in self._chunks]
             source = "live"

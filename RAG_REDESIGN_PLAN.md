@@ -515,6 +515,7 @@ RERANKER_MAX_LATENCY_SECONDS=2
 # BM25
 BM25_TOKENIZER=underthesea
 BM25_CACHE_PATH=.rag_cache/bm25_cache.pkl
+BM25_ALLOW_LIVE_BUILD=false
 
 # Chat routing/rewrite
 CHAT_RETRIEVE_EVERY_TURN=true

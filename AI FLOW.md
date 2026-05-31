@@ -189,11 +189,13 @@ procedure_chunks
   -> .rag_cache/bm25_cache.pkl
 ```
 
-Sau khi data thay doi, nen chay lai:
+Sau khi data thay doi tren local hoac server du RAM, nen chay lai:
 
 ```text
 rag-build -> pinecone-sync -> bm25-build-cache -> restart backend
 ```
+
+Tren Render free 512MB RAM, khong nen build BM25 cache trong startup/scheduler. Khi khong co cache va `BM25_ALLOW_LIVE_BUILD=false`, backend se bo qua BM25 lexical search va van dung Pinecone dense search + reranker.
 
 ## 4. Luong Chat Cau Hoi Dau Tien
 
@@ -268,7 +270,7 @@ Nguon:
 .rag_cache/bm25_cache.pkl
 ```
 
-Neu cache chua co, backend co the build live tu Supabase, nhung viec nay rat cham. Nen luon build cache truoc khi chat.
+Neu cache chua co va `BM25_ALLOW_LIVE_BUILD=false`, backend bo qua BM25 de tranh OOM. Neu `BM25_ALLOW_LIVE_BUILD=true`, backend co the build live tu Supabase, nhung viec nay rat cham va khong phu hop Render free.
 
 ### Pinecone Dense Search
 
@@ -534,7 +536,13 @@ Neu thay:
 [bm25] indexed ... from live in 300s
 ```
 
-nghia la chua co BM25 cache hoac cache khong hop le. Can chay:
+nghia la backend dang build BM25 live vi chua co cache hoac cache khong hop le. Tren Render free nen tat live build:
+
+```text
+BM25_ALLOW_LIVE_BUILD=false
+```
+
+Tren local/server du RAM co the chay:
 
 ```powershell
 python -m app.cli bm25-build-cache
@@ -643,4 +651,3 @@ Pinecone
 BM25 cache file
   giu lexical index da tokenize de search nhanh luc runtime
 ```
-

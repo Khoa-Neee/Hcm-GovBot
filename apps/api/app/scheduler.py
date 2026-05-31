@@ -131,13 +131,16 @@ class AppScheduler:
                 pinecone_stats.embedding_dim,
             )
 
-            bm25_stats = BM25Service(self.settings).build_cache()
-            logger.info(
-                "Scheduled bm25 cache rebuilt: chunks=%s seconds=%s path=%s",
-                bm25_stats["chunk_count"],
-                bm25_stats["seconds"],
-                bm25_stats["path"],
-            )
+            if self.settings.scheduler_bm25_sync_enabled:
+                bm25_stats = BM25Service(self.settings).build_cache()
+                logger.info(
+                    "Scheduled bm25 cache rebuilt: chunks=%s seconds=%s path=%s",
+                    bm25_stats["chunk_count"],
+                    bm25_stats["seconds"],
+                    bm25_stats["path"],
+                )
+            else:
+                logger.info("Scheduled BM25 cache rebuild skipped because SCHEDULER_BM25_SYNC_ENABLED=false")
         else:
             logger.info("Scheduled RAG/Pinecone/BM25 sync skipped because SCHEDULER_RAG_SYNC_ENABLED=false")
         logger.info("Scheduled sync finished")
