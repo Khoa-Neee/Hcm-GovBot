@@ -134,7 +134,8 @@ class ChatMessageRequest(BaseModel):
 
 
 class ChatContextUpdateRequest(BaseModel):
-    procedure_context: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    procedure_context: list[dict[str, Any]] = Field(default_factory=list)
+    source_context: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatContextSummarizeRequest(BaseModel):
@@ -148,6 +149,8 @@ class LocalChatMessageRequest(BaseModel):
     initial_question: str = Field(min_length=1)
     message: str = Field(min_length=1)
     procedure_context: list[dict[str, Any]] = Field(default_factory=list)
+    source_context: list[dict[str, Any]] = Field(default_factory=list)
+    history: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatProcedureContext(BaseModel):
@@ -161,10 +164,27 @@ class ChatProcedureContext(BaseModel):
     summary: str
 
 
+class ChatSourceChunk(BaseModel):
+    chunk_id: str
+    citation: str
+    procedure_id: str
+    procedure_code: str
+    procedure_group: ProcedureGroup
+    name: str
+    section_name: str
+    source_url: str
+    field_name: str | None = None
+    target_audience: str | None = None
+    implementation_agency: str | None = None
+    score: float | None = None
+    text: str
+
+
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
     procedures: list[ChatProcedureContext] = Field(default_factory=list)
+    sources: list[ChatSourceChunk] = Field(default_factory=list)
     inference_seconds: float | None = None
     expires_at: str | None = None
 
@@ -191,6 +211,7 @@ class ChatSessionDetail(BaseModel):
     user_type: str | None = None
     initial_question: str | None = None
     procedure_context: list[ChatProcedureContext] = Field(default_factory=list)
+    source_context: list[ChatSourceChunk] = Field(default_factory=list)
     messages: list[ChatMessageRecord] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None

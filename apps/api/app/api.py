@@ -24,8 +24,8 @@ from app.models import (
     VectorSearchResponse,
 )
 from app.services.chat_service import ChatService
+from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.supabase_repo import SupabaseRepository
-from app.services.supabase_vector_service import SupabaseVectorService
 
 router = APIRouter()
 
@@ -116,17 +116,29 @@ async def stats_overview() -> dict:
 
 @router.post("/search/vector", response_model=VectorSearchResponse)
 async def vector_search(payload: VectorSearchRequest) -> dict:
-    service = SupabaseVectorService(get_settings())
+    service = HybridRetrievalService(get_settings())
     try:
-        items = await asyncio.to_thread(
-            service.search,
-            payload.query,
-            payload.limit,
-            payload.group.value if payload.group else None,
-            payload.target_audience,
-        )
+        chunks = await asyncio.to_thread(service.search, payload.query, payload.limit)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Vector search failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Hybrid search failed: {exc}") from exc
+    by_procedure: dict[str, dict] = {}
+    for chunk in chunks:
+        procedure_id = chunk["procedure_id"]
+        if procedure_id in by_procedure:
+            continue
+        by_procedure[procedure_id] = {
+            "procedure_id": procedure_id,
+            "procedure_code": chunk["procedure_code"],
+            "procedure_group": chunk["procedure_group"],
+            "name": chunk["name"],
+            "field_name": chunk.get("field_name"),
+            "target_audience": chunk.get("target_audience"),
+            "source_url": chunk["source_url"],
+            "similarity": float(chunk.get("rerank_score") or chunk.get("rrf_score") or chunk.get("dense_score") or 0),
+        }
+        if len(by_procedure) >= payload.limit:
+            break
+    items = list(by_procedure.values())
     return {"items": items}
 
 
@@ -196,10 +208,10 @@ async def update_chat_context(
     repo = SupabaseRepository(get_settings())
     try:
         await asyncio.to_thread(repo.delete_expired_chat_sessions, user_id)
-        await asyncio.to_thread(repo.update_chat_context, session_id, payload.procedure_context[:3], user_id)
+        await asyncio.to_thread(repo.update_chat_contexts, session_id, payload.procedure_context, payload.source_context, user_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Cannot update chat context: {exc}") from exc
-    return payload.procedure_context[:3]
+    return payload.procedure_context
 
 
 @router.post("/chat/context/summarize", response_model=dict)
@@ -228,6 +240,8 @@ async def continue_local_chat(payload: LocalChatMessageRequest) -> dict:
             payload.initial_question,
             payload.message,
             payload.procedure_context,
+            payload.source_context,
+            payload.history,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Chat failed: {exc}") from exc

@@ -18,6 +18,7 @@ import {
 import {
   AuthSession,
   ChatProcedureContext,
+  ChatSourceChunk,
   ChatSessionListItem,
   FilterOptions,
   ProcedureGroup,
@@ -57,6 +58,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   inferenceSeconds?: number | null;
+  sources?: ChatSourceChunk[];
 };
 
 type StoredChatState = {
@@ -65,6 +67,7 @@ type StoredChatState = {
   sessionId: string;
   messages: ChatMessage[];
   procedures: ChatProcedureContext[];
+  sources: ChatSourceChunk[];
   expiresAt: string | null;
 };
 
@@ -382,6 +385,7 @@ function ChatView() {
   const [sessionId, setSessionId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [procedures, setProcedures] = useState<ChatProcedureContext[]>([]);
+  const [sources, setSources] = useState<ChatSourceChunk[]>([]);
   const [sessions, setSessions] = useState<ChatSessionListItem[]>([]);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
@@ -408,7 +412,8 @@ function ChatView() {
       setQuestion(state.question || "");
       setSessionId(state.sessionId || "");
       setMessages(Array.isArray(state.messages) ? state.messages : []);
-      setProcedures(Array.isArray(state.procedures) ? state.procedures.slice(0, 3) : []);
+      setProcedures(Array.isArray(state.procedures) ? state.procedures : []);
+      setSources(Array.isArray(state.sources) ? state.sources : []);
       setExpiresAt(state.expiresAt ?? null);
     } catch {
       // Ignore invalid stored state.
@@ -440,11 +445,11 @@ function ChatView() {
     return () => window.clearInterval(timer);
   }, [loading, contextBusyId]);
 
-  const syncSavedContext = async (nextContext: ChatProcedureContext[]) => {
+  const syncSavedContext = async (nextContext: ChatProcedureContext[], nextSources: ChatSourceChunk[] = sources) => {
     if (!authSession?.access_token || !sessionId || sessionId.startsWith("local:")) {
       return;
     }
-    await updateSavedChatContext(sessionId, nextContext, authSession.access_token);
+    await updateSavedChatContext(sessionId, nextContext, nextSources, authSession.access_token);
   };
 
   const refreshSessions = useCallback(async () => {
@@ -487,6 +492,7 @@ function ChatView() {
           sessionId,
           messages,
           procedures,
+          sources,
           expiresAt,
         } satisfies StoredChatState),
       );
@@ -511,7 +517,8 @@ function ChatView() {
       setSessionId(session.id);
       setUserType(session.user_type === "business" ? "business" : "individual");
       setExpiresAt(session.expires_at ?? null);
-      setProcedures((session.procedure_context ?? []).slice(0, 3));
+      setProcedures(session.procedure_context ?? []);
+      setSources(session.source_context ?? []);
       setMessages(
         session.messages
           .filter((message) => message.role === "user" || message.role === "assistant")
@@ -519,6 +526,7 @@ function ChatView() {
             role: message.role as "user" | "assistant",
             content: message.content,
             inferenceSeconds: typeof message.metadata?.inference_seconds === "number" ? message.metadata.inference_seconds : null,
+            sources: Array.isArray(message.metadata?.sources) ? (message.metadata.sources as ChatSourceChunk[]) : [],
           })),
       );
     } catch (err) {
@@ -532,6 +540,7 @@ function ChatView() {
     setSessionId("");
     setMessages([]);
     setProcedures([]);
+    setSources([]);
     setExpiresAt(null);
     setChatError("");
     setQuestion("");
@@ -548,14 +557,22 @@ function ChatView() {
     try {
       const isSavedSession = authSession?.access_token && sessionId && !sessionId.startsWith("local:");
       const response = isSavedSession
-        ? await sendChatMessage(sessionId, text, authSession.access_token)
+          ? await sendChatMessage(sessionId, text, authSession.access_token)
         : sessionId.startsWith("local:")
-          ? await sendLocalChatMessage(userType, messages[0]?.content || text, text, procedures)
+          ? await sendLocalChatMessage(
+              userType,
+              messages[0]?.content || text,
+              text,
+              procedures,
+              sources,
+              messages.map((message) => ({ role: message.role, content: message.content })),
+            )
           : await startChat(userType, text, authSession?.access_token);
       setSessionId(response.session_id);
       setExpiresAt(response.expires_at ?? null);
-      setProcedures(response.procedures.slice(0, 3));
-      setMessages((prev) => [...prev, { role: "assistant", content: response.answer, inferenceSeconds: response.inference_seconds }]);
+      setProcedures(response.procedures);
+      setSources(response.sources ?? []);
+      setMessages((prev) => [...prev, { role: "assistant", content: response.answer, inferenceSeconds: response.inference_seconds, sources: response.sources ?? [] }]);
       if (authSession?.access_token) {
         refreshSessions();
       }
@@ -598,8 +615,10 @@ function ChatView() {
 
   const removeProcedureFromContext = async (procedureId: string) => {
     const nextContext = procedures.filter((item) => item.procedure_id !== procedureId);
+    const nextSources = sources.filter((item) => item.procedure_id !== procedureId);
+    setSources(nextSources);
     setProcedures(nextContext);
-    await syncSavedContext(nextContext);
+    await syncSavedContext(nextContext, nextSources);
   };
 
   const addProcedureToContext = async (procedureId: string) => {
@@ -607,15 +626,11 @@ function ChatView() {
       setChatError("Thủ tục này đã có trong context.");
       return;
     }
-    if (procedures.length >= 3) {
-      setChatError("Context chỉ hỗ trợ tối đa 3 thủ tục. Hãy xóa bớt một thủ tục trước khi thêm.");
-      return;
-    }
     setContextBusyId(procedureId);
     setChatError("");
     try {
       const contextItem = await summarizeContextProcedure(procedureId, userType, messages[0]?.content || contextQuery || "Người dùng thêm thủ tục vào context");
-      const nextContext = [...procedures, contextItem].slice(0, 3);
+      const nextContext = [...procedures, contextItem];
       setProcedures(nextContext);
       await syncSavedContext(nextContext);
       setContextSearchResults((prev) => prev.filter((item) => item.procedure_id !== procedureId));
@@ -690,11 +705,12 @@ function ChatView() {
                 {message.role === "assistant" && typeof message.inferenceSeconds === "number" && (
                   <div className="mt-2 text-xs text-civic-muted">Thời gian suy luận: {formatSeconds(message.inferenceSeconds)}</div>
                 )}
+                {message.role === "assistant" && message.sources && message.sources.length > 0 && <SourceList sources={message.sources} />}
               </div>
             ))}
             {chatError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{chatError}</div>}
             {loading && <LoadingBlock label={`AI đang đọc thủ tục liên quan, có thể mất khoảng 15s... ${elapsedSeconds}s`} />}
-            {searching && <LoadingBlock label="Đang tìm bằng pgvector..." />}
+            {searching && <LoadingBlock label="Đang tìm bằng hybrid retrieval..." />}
           </div>
         </div>
         <form ref={inputBarRef} className="shrink-0 flex gap-2 border-t border-civic-line p-4" onSubmit={submit}>
@@ -714,7 +730,7 @@ function ChatView() {
       <aside className="flex min-h-0 flex-col rounded-lg border border-civic-line bg-white shadow-soft">
         <div className="border-b border-civic-line p-3">
           <h3 className="text-sm font-semibold">Thủ tục dùng để trả lời</h3>
-          <div className="mt-1 text-xs text-civic-muted">{procedures.length}/3 thủ tục. Câu hỏi ngoài phạm vi này có thể không được trả lời.</div>
+          <div className="mt-1 text-xs text-civic-muted">{sources.length} chunk nguồn.</div>
         </div>
         <div className="border-b border-civic-line p-3">
           <div className="flex gap-2">
@@ -724,26 +740,35 @@ function ChatView() {
               onChange={(event) => setContextQuery(event.target.value)}
               placeholder="Tìm thủ tục để thêm"
             />
-            <button className="h-9 rounded-md border border-civic-line px-2 text-xs font-semibold disabled:opacity-50" onClick={searchContextProcedures} disabled={searching || procedures.length >= 3}>
+            <button className="h-9 rounded-md border border-civic-line px-2 text-xs font-semibold disabled:opacity-50" onClick={searchContextProcedures} disabled={searching}>
               Tìm
             </button>
           </div>
-          {procedures.length >= 3 && <div className="mt-2 text-xs text-civic-muted">Đã đạt giới hạn 3 thủ tục.</div>}
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <div className="divide-y divide-civic-line">
-            {procedures.map((item) => (
-              <div key={`${item.procedure_group}-${item.procedure_code}`} className="p-3">
-                <div className="text-xs font-semibold text-civic-red">{item.procedure_code}</div>
-                <div className="mt-1 line-clamp-3 text-sm font-semibold">{item.name}</div>
-                <div className="mt-1 text-xs text-civic-muted">{item.field_name || groupLabels[item.procedure_group]}</div>
-                <button className="mt-2 rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700" onClick={() => removeProcedureFromContext(item.procedure_id)}>
-                  Xóa
-                </button>
+          {sources.length > 0 && (
+            <div>
+              <div className="p-3 text-xs font-semibold text-civic-muted">Chunk nguồn gần nhất</div>
+              <div className="divide-y divide-civic-line">
+                {sources.map((source) => (
+                  <div key={source.chunk_id} className="p-3">
+                    <div className="text-xs font-semibold text-civic-teal">[{source.citation}] {source.section_name}</div>
+                    <div className="mt-1 line-clamp-2 text-sm font-semibold">{source.name}</div>
+                    <div className="mt-1 line-clamp-3 text-xs text-civic-muted">{source.text}</div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <a className="inline-flex text-xs font-semibold text-civic-teal underline" href={source.source_url} target="_blank" rel="noreferrer">
+                        Nguồn
+                      </a>
+                      <button className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700" onClick={() => removeProcedureFromContext(source.procedure_id)}>
+                        Xóa thủ tục này
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-            {procedures.length === 0 && <div className="p-3 text-sm text-civic-muted">Chưa có thủ tục nào.</div>}
-          </div>
+            </div>
+          )}
+          {sources.length === 0 && <div className="p-3 text-sm text-civic-muted">Chưa có chunk nguồn nào.</div>}
           {contextSearchResults.length > 0 && (
             <div className="border-t border-civic-line">
               <div className="p-3 text-xs font-semibold text-civic-muted">Kết quả tìm thêm</div>
@@ -761,7 +786,7 @@ function ChatView() {
                       <button
                         className="mt-2 rounded-md bg-civic-ink px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
                         onClick={() => addProcedureToContext(item.procedure_id)}
-                        disabled={exists || procedures.length >= 3 || Boolean(contextBusyId)}
+                        disabled={exists || Boolean(contextBusyId)}
                       >
                         {busy ? `Đang đọc... ${elapsedSeconds}s` : exists ? "Đã có" : "Thêm"}
                       </button>
@@ -797,6 +822,23 @@ function GoogleIcon() {
   );
 }
 
+function SourceList({ sources }: { sources: ChatSourceChunk[] }) {
+  return (
+    <div className="mt-3 rounded-md border border-civic-line bg-white/80 p-2 text-xs text-civic-ink">
+      <div className="mb-2 font-semibold">Nguồn đã dùng</div>
+      <div className="space-y-2">
+        {sources.map((source) => (
+          <a key={source.chunk_id} className="block rounded border border-civic-line p-2 hover:bg-slate-50" href={source.source_url} target="_blank" rel="noreferrer">
+            <span className="font-semibold text-civic-teal">[{source.citation}] {source.procedure_code}</span>
+            <span className="ml-1">{source.section_name}</span>
+            <div className="mt-1 line-clamp-2 text-civic-muted">{source.name}</div>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FormattedAnswer({ content }: { content: string }) {
   const blocks = content.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
   if (blocks.length === 0) {
@@ -807,6 +849,9 @@ function FormattedAnswer({ content }: { content: string }) {
     <div className="space-y-3">
       {blocks.map((block, index) => {
         const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+        if (isMarkdownTable(lines)) {
+          return <MarkdownTable key={index} lines={lines} />;
+        }
         if (lines.length === 1 && !isListLine(lines[0])) {
           return <p key={index}>{renderInline(lines[0])}</p>;
         }
@@ -821,6 +866,49 @@ function FormattedAnswer({ content }: { content: string }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function isMarkdownTable(lines: string[]) {
+  return lines.length >= 2 && lines[0].includes("|") && /^[:\-\s|]+$/.test(lines[1]);
+}
+
+function MarkdownTable({ lines }: { lines: string[] }) {
+  const rows = lines
+    .filter((line, index) => index !== 1)
+    .map((line) =>
+      line
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim()),
+    );
+  const [header, ...body] = rows;
+  return (
+    <div className="overflow-x-auto rounded-md border border-civic-line bg-white">
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="bg-slate-50">
+          <tr>
+            {header.map((cell, index) => (
+              <th key={index} className="border-b border-civic-line px-2 py-2 font-semibold">
+                {renderInline(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {body.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} className="border-t border-civic-line px-2 py-2 align-top">
+                  {renderInline(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

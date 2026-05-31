@@ -6,6 +6,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.tmp/
+apps/web/.tmp/
 .venv/
 venv/
 
@@ -16,6 +18,8 @@ build/
 
 .chroma/
 chroma/
+.rag_cache/
+apps/api/.rag_cache/
 
 .DS_Store
 Thumbs.db
@@ -23,3 +27,7 @@ Thumbs.db
 *.log
 
 SECRET.md
+
+supabase/*
+!supabase/migrations/
+!supabase/migrations/*.sql

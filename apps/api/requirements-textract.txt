@@ -1,0 +1,3 @@
+# Optional fallback only. The current pipeline parses HTML directly first.
+# The textract package has old transitive pins, so install it separately if needed.
+textract==1.6.5

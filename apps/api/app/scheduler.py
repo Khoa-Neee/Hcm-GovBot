@@ -5,7 +5,9 @@ from threading import Lock
 
 from app.config import Settings
 from app.models import ProcedureGroup
-from app.services.supabase_vector_service import SupabaseVectorService
+from app.services.bm25_service import BM25Service
+from app.services.pinecone_vector_service import PineconeVectorService
+from app.services.rag_build_service import RagBuildService
 from app.sync import ProcedureSyncService
 
 logger = logging.getLogger(__name__)
@@ -71,13 +73,71 @@ class AppScheduler:
         sync_service = ProcedureSyncService(self.settings)
         sync_service.repo.delete_expired_chat_sessions()
         for group in [ProcedureGroup.administrative, ProcedureGroup.interlinked]:
-            await sync_service.sync_group(
+            stats = await sync_service.sync_group(
                 group=group,
                 max_items=None,
                 mark_inactive=self.settings.scheduler_mark_inactive,
                 progress_every=0,
             )
+            logger.info(
+                "Scheduled crawl %s finished: seen=%s inserted=%s updated=%s unchanged=%s failed=%s",
+                group.value,
+                stats.seen,
+                stats.inserted,
+                stats.updated,
+                stats.unchanged,
+                stats.failed,
+            )
 
-        vector_service = SupabaseVectorService(self.settings)
-        vector_service.sync_embeddings(force=self.settings.scheduler_vector_force)
+        if self.settings.scheduler_rag_sync_enabled:
+            rag_service = RagBuildService(self.settings)
+            rag_stats = rag_service.build_documents_and_chunks(
+                force=self.settings.scheduler_vector_force,
+                progress_every=self.settings.scheduler_rag_progress_every,
+                progress_callback=lambda stats: logger.info(
+                    "Scheduled rag-build progress: seen=%s documents=%s chunks=%s skipped=%s failed=%s",
+                    stats.seen,
+                    stats.documents_upserted,
+                    stats.chunks_upserted,
+                    stats.skipped,
+                    stats.failed,
+                ),
+            )
+            logger.info(
+                "Scheduled rag-build finished: seen=%s documents=%s chunks=%s skipped=%s failed=%s",
+                rag_stats.seen,
+                rag_stats.documents_upserted,
+                rag_stats.chunks_upserted,
+                rag_stats.skipped,
+                rag_stats.failed,
+            )
+
+            pinecone_service = PineconeVectorService(self.settings)
+            pinecone_stats = pinecone_service.sync_chunks(
+                batch_size=self.settings.scheduler_pinecone_batch_size,
+                progress_callback=lambda stats: logger.info(
+                    "Scheduled pinecone-sync progress: seen=%s upserted=%s failed=%s embedding_dim=%s",
+                    stats.seen,
+                    stats.upserted,
+                    stats.failed,
+                    stats.embedding_dim,
+                ),
+            )
+            logger.info(
+                "Scheduled pinecone-sync finished: seen=%s upserted=%s failed=%s embedding_dim=%s",
+                pinecone_stats.seen,
+                pinecone_stats.upserted,
+                pinecone_stats.failed,
+                pinecone_stats.embedding_dim,
+            )
+
+            bm25_stats = BM25Service(self.settings).build_cache()
+            logger.info(
+                "Scheduled bm25 cache rebuilt: chunks=%s seconds=%s path=%s",
+                bm25_stats["chunk_count"],
+                bm25_stats["seconds"],
+                bm25_stats["path"],
+            )
+        else:
+            logger.info("Scheduled RAG/Pinecone/BM25 sync skipped because SCHEDULER_RAG_SYNC_ENABLED=false")
         logger.info("Scheduled sync finished")

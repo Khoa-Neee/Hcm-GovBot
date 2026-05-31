@@ -1,26 +1,209 @@
 # AI FLOW.md
 
-Tài liệu này mô tả luồng AI của HCM GovBot khi người dùng hỏi về thủ tục hành chính.
+Tai lieu nay mo ta luong AI/RAG hien tai cua HCM GovBot sau khi chuyen sang parent-child chunking, Pinecone, BM25, RRF va reranker.
 
-## 1. Mục Tiêu
+## 1. Muc Tieu
 
-AI không chỉ liệt kê các thủ tục gần đúng. Mục tiêu hiện tại là:
+Muc tieu cua AI la tra loi dung cau hoi cua nguoi dung dua tren du lieu thu tuc hanh chinh TP.HCM da crawl.
 
-- Hiểu câu hỏi của người dùng.
-- Tìm tối đa 3 thủ tục liên quan nhất.
-- Tóm tắt đúng phần dữ liệu cần thiết từ các thủ tục đó.
-- Trả lời trực tiếp vào nhu cầu của người dùng bằng tiếng Việt dễ hiểu.
-- Giữ context nhỏ, rõ, và có thể hỏi tiếp trong cùng phiên.
+Yeu cau chinh:
 
-## 2. Câu Hỏi Đầu Tiên
+- Tra loi truc tiep vao cau hoi, khong liet ke tran lan toan bo thu tuc.
+- Chi dua tren context duoc retrieve tu du lieu that.
+- Neu khong co thong tin trong context, noi ro chua thay du lieu.
+- Moi thong tin quan trong can co citation dang `[C1]`, `[C2]`.
+- UI hien thi cac chunk nguon da dung de nguoi dung kiem tra.
+- Cau hoi tiep theo khong bi khoa vao context cu; he thong se phan loai follow-up/topic moi va retrieve lai.
 
-Khi người dùng gửi câu hỏi đầu tiên, frontend gọi:
+## 2. Cac Noi Luu Tru Du Lieu
+
+He thong hien tai ket hop 3 lop luu tru:
+
+```text
+Supabase PostgreSQL
+  -> du lieu goc, markdown, chunks, chat history, evaluation
+
+Pinecone
+  -> vector embedding cua procedure_chunks
+
+Local cache file
+  -> BM25 lexical index cache
+```
+
+### Supabase
+
+Supabase la database chinh cua ung dung.
+
+Bang quan trong:
+
+```text
+procedures
+procedure_documents
+procedure_chunks
+chat_sessions
+chat_messages
+retrieval_eval_questions
+retrieval_eval_results
+rag_eval_results
+```
+
+Vai tro:
+
+- `procedures`: thu tuc goc da crawl tu Cong DVCQG.
+- `procedure_documents`: noi dung thu tuc da chuan hoa thanh markdown.
+- `procedure_chunks`: child chunks 512 tokens, overlap 50 tokens.
+- `chat_sessions`: phien chat cua user dang nhap, gom `procedure_context` va `source_context`.
+- `chat_messages`: tin nhan user/assistant va metadata.
+- `retrieval_eval_*`, `rag_eval_results`: du lieu danh gia retrieval/RAG.
+
+### Pinecone
+
+Pinecone luu vector cua tung chunk trong `procedure_chunks`.
+
+Moi vector dung:
+
+```text
+id = chunk_id
+values = embedding cua chunk
+metadata = procedure_id, procedure_code, name, section_name, source_url, ...
+namespace = dev/prod
+metric = cosine
+dimension = 1024
+```
+
+Pinecone khong phai noi luu du lieu day du. No dung de semantic search nhanh. Sau khi Pinecone tra ve `chunk_id`, backend lay noi dung chunk day du tu Supabase.
+
+### BM25 Cache File
+
+BM25 dung de lexical search theo keyword tieng Viet.
+
+Vi tokenize 19k chunks bang `underthesea` rat cham, backend dung cache file:
+
+```text
+.rag_cache/bm25_cache.pkl
+```
+
+Cache nay duoc tao thu cong bang:
+
+```powershell
+python -m app.cli bm25-build-cache
+```
+
+Khi chat runtime, BM25 load tu cache thay vi tokenize lai toan bo chunks.
+
+## 3. Pipeline Tao Du Lieu RAG
+
+### Buoc 1: Crawl va luu thu tuc goc
+
+Crawler lay du lieu tu Cong DVCQG va luu vao:
+
+```text
+procedures
+```
+
+Lenh lien quan:
+
+```powershell
+python -m app.cli sync --group administrative --full --mark-inactive
+python -m app.cli sync --group interlinked --full --mark-inactive
+```
+
+### Buoc 2: Chuan hoa markdown va chunking
+
+Lenh:
+
+```powershell
+python -m app.cli rag-build --full --force
+```
+
+Luong xu ly:
+
+```text
+procedures
+  -> DocumentExtractionService
+  -> procedure_documents.normalized_markdown
+  -> ChunkingService
+  -> procedure_chunks
+```
+
+`DocumentExtractionService`:
+
+- Lay metadata thu tuc.
+- Lay cac section: cach thuc thuc hien, thoi han, phi/le phi, ho so, trinh tu, yeu cau, can cu phap ly.
+- Parse HTML table thanh markdown table neu co.
+- Python `textract` chi la fallback tuy chon; phase hien tai uu tien HTML/structured fields.
+
+`ChunkingService`:
+
+- Chunk theo section truoc.
+- Child chunk gioi han 512 tokens.
+- Overlap 50 tokens.
+- Moi chunk co header ngu canh:
+
+```text
+Thu tuc: ...
+Ma thu tuc: ...
+Linh vuc: ...
+Co quan thuc hien: ...
+Muc: ...
+```
+
+### Buoc 3: Embed va upsert Pinecone
+
+Lenh:
+
+```powershell
+python -m app.cli pinecone-sync --full --batch-size 32
+```
+
+Luong xu ly:
+
+```text
+procedure_chunks
+  -> HuggingFaceEmbeddingService
+  -> AITeamVN/Vietnamese_Embedding
+  -> vector 1024 dimensions
+  -> Pinecone upsert theo chunk_id
+```
+
+`upsert` nghia la:
+
+- Chua co `chunk_id` thi insert.
+- Da co `chunk_id` thi update/ghi de.
+- Khong tao record trung.
+
+### Buoc 4: Build BM25 cache
+
+Lenh:
+
+```powershell
+python -m app.cli bm25-build-cache
+```
+
+Luong xu ly:
+
+```text
+procedure_chunks
+  -> underthesea word_tokenize
+  -> BM25 tokenized corpus
+  -> .rag_cache/bm25_cache.pkl
+```
+
+Sau khi data thay doi, nen chay lai:
+
+```text
+rag-build -> pinecone-sync -> bm25-build-cache -> restart backend
+```
+
+## 4. Luong Chat Cau Hoi Dau Tien
+
+Frontend goi:
 
 ```text
 POST /api/chat/sessions
 ```
 
-Payload chính:
+Payload:
 
 ```json
 {
@@ -29,203 +212,302 @@ Payload chính:
 }
 ```
 
-Backend xử lý trong `ChatService.start_session`.
-
-### Bước 1: Đoán tên thủ tục có thể liên quan
-
-Backend gọi Gemini để suy luận tối đa 3 tên thủ tục hành chính có khả năng liên quan nhất từ câu hỏi.
-
-Ví dụ người dùng hỏi:
+Backend xu ly trong:
 
 ```text
-Tôi muốn nhận nuôi con nuôi thì cần giấy tờ gì?
+ChatService.start_session
 ```
 
-AI có thể suy ra các tên thủ tục gần đúng như:
+Luong chinh:
 
 ```text
-Đăng ký việc nuôi con nuôi trong nước
-Đăng ký lại việc nuôi con nuôi
-Giải quyết việc nuôi con nuôi có yếu tố nước ngoài
+question
+  -> ChatRoutingService.route
+  -> HybridRetrievalService.search
+  -> ContextPackingService.pack
+  -> Gemini answer generation
+  -> response answer + sources
 ```
 
-### Bước 2: Tìm thủ tục bằng pgvector
-
-Với mỗi tên thủ tục đã đoán, backend gọi vector search:
+Voi cau hoi dau tien, route mac dinh la:
 
 ```text
-SupabaseVectorService.search
+new_topic
 ```
 
-Mỗi query tìm một số thủ tục gần nhất trong bảng:
+## 5. Hybrid Retrieval
+
+Retrieval hien tai dung ket hop:
 
 ```text
-procedure_embeddings
+BM25 lexical search
++ Pinecone dense vector search
++ RRF fusion
++ bge reranker
 ```
 
-Sau đó backend:
-
-- Gộp kết quả trùng theo mã thủ tục và nhóm thủ tục.
-- Sắp xếp theo `similarity`.
-- Chỉ giữ tối đa 3 thủ tục tốt nhất.
-
-Giới hạn 3 thủ tục giúp câu trả lời tập trung hơn và tránh context quá nhiễu.
-
-### Bước 3: Lấy chi tiết thủ tục từ database
-
-Backend lấy bản ghi đầy đủ trong bảng:
+Luong:
 
 ```text
-procedures
+query
+  -> BM25Service.search
+  -> PineconeVectorService.search
+  -> Reciprocal Rank Fusion
+  -> lay full chunks tu Supabase
+  -> RerankService.rerank
+  -> top chunks
 ```
 
-Các trường quan trọng được dùng cho AI gồm:
+### BM25
 
-- Tên thủ tục.
-- Mã thủ tục.
-- Lĩnh vực.
-- Cơ quan thực hiện.
-- Đối tượng.
-- Cách thức thực hiện.
-- Thành phần hồ sơ.
-- Trình tự thực hiện.
-- Thời hạn.
-- Phí/lệ phí.
-- Yêu cầu, điều kiện.
-- Căn cứ pháp lý.
-- Link nguồn.
+BM25 tim theo keyword lexical.
 
-## 3. Tóm Tắt Từng Thủ Tục
-
-Backend gọi Gemini song song để tóm tắt từng thủ tục trong tối đa 3 thủ tục đã chọn.
-
-Mỗi lần tóm tắt sử dụng prompt yêu cầu:
-
-- Chỉ dùng dữ liệu thật trong database.
-- Không bịa thông tin ngoài dữ liệu.
-- Tập trung vào câu hỏi của người dùng.
-- Ưu tiên hồ sơ, thời hạn, phí/lệ phí, cơ quan thực hiện và cách nộp nếu liên quan.
-- Luôn giữ mã thủ tục và link nguồn.
-
-Kết quả tóm tắt được lưu thành `procedure_context`.
-
-## 4. Trả Lời Câu Đầu
-
-Sau khi có các tóm tắt, backend gọi Gemini lần nữa để tạo câu trả lời cuối.
-
-Yêu cầu quan trọng:
-
-- Trả lời trực tiếp câu hỏi của người dùng.
-- Không mở đầu bằng danh sách toàn bộ thủ tục phù hợp.
-- Nếu có một thủ tục phù hợp rõ nhất, dùng thủ tục đó làm câu trả lời chính.
-- Nếu có nhiều trường hợp dễ nhầm, chỉ nêu ngắn gọn điều kiện phân biệt.
-- Luôn kèm mã thủ tục và link nguồn của thủ tục đang dùng.
-
-Ví dụ định hướng câu trả lời:
+Nguon:
 
 ```text
-Nếu bạn muốn nhận nuôi con nuôi trong nước, thủ tục chính là Đăng ký việc nuôi con nuôi trong nước.
-
-- Hồ sơ cần chuẩn bị: ...
-- Cơ quan thực hiện: ...
-- Thời hạn giải quyết: ...
-- Lệ phí: ...
-- Mã thủ tục: ...
-- Link nguồn: ...
+.rag_cache/bm25_cache.pkl
 ```
 
-## 5. Lưu Phiên Chat
+Neu cache chua co, backend co the build live tu Supabase, nhung viec nay rat cham. Nen luon build cache truoc khi chat.
 
-Nếu người dùng đã đăng nhập Google, backend lưu phiên chat vào Supabase:
+### Pinecone Dense Search
+
+Dense search dung:
+
+```text
+AITeamVN/Vietnamese_Embedding
+```
+
+De embed query, sau do query Pinecone theo cosine similarity.
+
+### RRF
+
+BM25 va Pinecone co thang diem khac nhau, nen backend dung Reciprocal Rank Fusion:
+
+```text
+score(d) = sum(1 / (k + rank_i(d)))
+```
+
+Mac dinh:
+
+```text
+RETRIEVAL_RRF_K=60
+```
+
+### Reranker
+
+Sau RRF, backend rerank cac candidate bang:
+
+```text
+BAAI/bge-reranker-v2-m3
+```
+
+Reranker cham hon vector search vi no cham diem tung cap:
+
+```text
+(query, chunk_text)
+```
+
+De giam latency, chi nen rerank mot so candidate nho:
+
+```text
+RETRIEVAL_RERANK_TOP_N=8
+```
+
+Neu can nhanh hon co the giam:
+
+```text
+RETRIEVAL_RERANK_TOP_N=4
+```
+
+hoac tam tat:
+
+```text
+RERANKER_ENABLED=false
+```
+
+## 6. Context Packing
+
+Sau khi co top chunks da rerank, backend goi:
+
+```text
+ContextPackingService.pack
+```
+
+Context dua vao Gemini khong phai toan bo thu tuc, ma la cac chunk nguon:
+
+```text
+[C1]
+Thu tuc: ...
+Ma thu tuc: ...
+Muc: ...
+Nguon: ...
+Noi dung:
+...
+
+[C2]
+...
+```
+
+Thu tu context dung chien luoc dat thong tin quan trong o dau va cuoi:
+
+```text
+rank 1 -> dau context
+rank 2 -> cuoi context
+rank 3 -> sau rank 1
+rank 4 -> truoc rank 2
+```
+
+Muc tieu la giam rui ro model bo sot thong tin nam giua context.
+
+## 7. Sinh Cau Tra Loi
+
+Backend goi Gemini chat model voi prompt gom:
+
+- `user_type`.
+- Cau hoi moi.
+- Query retrieval da dung.
+- Route: `new_topic` hoac `follow_up`.
+- Chat history ngan.
+- Context chunks `[C1]`, `[C2]`, ...
+
+Yeu cau voi model:
+
+- Chi tra loi dua tren context.
+- Khong bia them.
+- Khong tom tat toan bo thu tuc neu nguoi dung chi hoi mot muc.
+- Neu thieu thong tin, noi ro du lieu hien co chua thay.
+- Khi dung thong tin, dan citation `[C1]`, `[C2]`.
+- Co the giu markdown table trong cau tra loi neu context co bang.
+
+Response chat gom:
+
+```json
+{
+  "session_id": "...",
+  "answer": "...",
+  "procedures": [],
+  "sources": [],
+  "inference_seconds": 12.34,
+  "expires_at": null
+}
+```
+
+`sources` la phan UI hien thi thanh chunk nguon.
+
+## 8. Cau Hoi Tiep Theo
+
+Cau hoi tiep theo khong chi dung context cu.
+
+Frontend goi:
+
+```text
+POST /api/chat/sessions/{session_id}/messages
+```
+
+hoac voi local chat:
+
+```text
+POST /api/chat/local/messages
+```
+
+Backend xu ly:
+
+```text
+chat history ngan + cau hoi moi
+  -> ChatRoutingService
+  -> phan loai follow_up hoac new_topic
+  -> neu follow_up: rewrite query co ngu canh
+  -> neu new_topic: dung cau hoi moi
+  -> retrieve lai BM25 + Pinecone
+  -> RRF + rerank
+  -> context packing moi
+  -> Gemini tra loi
+```
+
+Vi moi turn deu retrieve lai, he thong khong bi ket vao context cu. Neu nguoi dung chuyen chu de, AI co the tim thu tuc moi.
+
+## 9. Luu Chat
+
+Neu user dang nhap Google, backend luu vao Supabase:
 
 ```text
 chat_sessions
 chat_messages
 ```
 
-Trong `chat_sessions`, backend lưu:
+Trong `chat_sessions`:
 
 - `user_id`
 - `user_type`
 - `initial_question`
 - `procedure_context`
+- `source_context`
 - `created_at`
 - `updated_at`
 
-Trong `chat_messages`, backend lưu:
+Trong `chat_messages.metadata`:
 
-- Tin nhắn người dùng.
-- Câu trả lời AI.
-- Metadata như `inference_seconds` và danh sách thủ tục trong context.
+- `procedures`
+- `sources`
+- `route`
+- `query`
+- `inference_seconds`
 
-Nếu người dùng chưa đăng nhập, chat vẫn hoạt động nhưng không lưu lịch sử vào database.
+Neu user khong dang nhap:
 
-## 6. Hạn Lưu 7 Ngày
+- Chat van chay.
+- Session co dang `local:...`.
+- Lich su khong luu vao database.
+- Frontend giu context local tam thoi.
 
-Chat đã đăng nhập chỉ được giữ trong 7 ngày kể từ lần hỏi gần nhất.
+## 10. UI Hien Tai
 
-Cơ chế:
+Tab "Hoi AI" hien thi:
 
-- Mỗi khi người dùng gửi tin nhắn mới, backend cập nhật `updated_at` của session.
-- `expires_at` được tính là `updated_at + 7 ngày`.
-- Khi list, mở, hoặc xử lý chat session, backend dọn các session có `updated_at` cũ hơn 7 ngày.
-- Scheduler cũng gọi dọn session quá hạn trong pipeline định kỳ.
+- Khung chat o giua.
+- Cau tra loi co citation `[C1]`, `[C2]`.
+- Phan "Nguon da dung" ben duoi cau tra loi.
+- Panel ben phai hien thi "Chunk nguon gan nhat".
+- Khong hien danh sach thu tuc rieng o phia tren panel nua.
 
-Frontend hiển thị thời điểm tự xóa để người dùng biết.
-
-## 7. Câu Hỏi Tiếp Theo
-
-Khi người dùng hỏi tiếp trong cùng phiên, frontend gọi:
-
-```text
-POST /api/chat/sessions/{session_id}/messages
-```
-
-Backend xử lý trong `ChatService.continue_session`.
-
-Luồng xử lý:
+Panel phai hien:
 
 ```text
-message mới
-  -> lấy procedure_context hiện tại
-  -> chỉ dùng tối đa 3 thủ tục trong context
-  -> gọi Gemini trả lời dựa trên context
-  -> không search lại mặc định
-  -> lưu tin nhắn nếu đã đăng nhập
-  -> cập nhật updated_at để gia hạn thêm 7 ngày
+8 chunk nguon
+
+[C1] Thanh phan ho so
+Ten thu tuc...
+Preview chunk...
+Nguon
+
+[C2] Trinh tu thuc hien
+...
 ```
 
-Nếu câu hỏi mới vượt khỏi context, AI được yêu cầu nói rõ nội dung có vẻ nằm ngoài các thủ tục đang xét và hỏi người dùng có muốn tìm thủ tục khác không.
+Neu cau tra loi co markdown table, frontend render thanh bang.
 
-## 8. Thêm/Xóa Thủ Tục Trong Context
+## 11. Tim Them Nguon Trong UI
 
-Người dùng có thể tìm thủ tục ở panel bên phải để thêm vào context.
+O panel phai, nguoi dung co the tim thu tuc/chunk de them vao context.
 
-Luồng thêm thủ tục:
+Luong:
 
 ```text
-Người dùng nhập từ khóa
-  -> frontend gọi vector search
-  -> hiển thị kết quả gần đúng
-  -> người dùng bấm Thêm
-  -> backend lấy chi tiết thủ tục
-  -> Gemini tóm tắt thủ tục theo câu hỏi/context hiện tại
-  -> thêm vào procedure_context
+keyword
+  -> POST /api/search/vector
+  -> HybridRetrievalService.search
+  -> tra danh sach thu tuc suy ra tu chunks
+  -> nguoi dung bam Them
+  -> backend lay summary thu tuc
+  -> them vao context hien tai
 ```
 
-Giới hạn:
+Luu y: cau hoi tiep theo van retrieve lai tu BM25 + Pinecone, nen context manual khong phai gioi han cung.
 
-```text
-Tối đa 3 thủ tục trong context
-```
+## 12. Thoi Gian Suy Luan Va Log
 
-Nếu context đã đủ 3 thủ tục, người dùng phải xóa bớt một thủ tục trước khi thêm thủ tục mới.
-
-## 9. Thời Gian Suy Luận
-
-Backend đo thời gian xử lý bằng `time.perf_counter`.
-
-Các API chat trả thêm:
+Backend tra:
 
 ```json
 {
@@ -233,23 +515,86 @@ Các API chat trả thêm:
 }
 ```
 
-Frontend hiển thị dưới câu trả lời:
+Frontend hien:
 
 ```text
-Thời gian suy luận: 12,3 giây
+Thoi gian suy luan: 12,3 giay
 ```
 
-Với phiên đã lưu, thời gian suy luận cũng được lưu trong metadata của message assistant.
+Backend cung log retrieval timing:
 
-## 10. Các Thành Phần Chính
+```text
+[bm25] indexed 19414 chunks from cache in 2.31s
+[retrieval] bm25=2.40s dense=1.20s hydrate=0.50s rerank=3.10s total=7.20s candidates=54
+```
+
+Neu thay:
+
+```text
+[bm25] indexed ... from live in 300s
+```
+
+nghia la chua co BM25 cache hoac cache khong hop le. Can chay:
+
+```powershell
+python -m app.cli bm25-build-cache
+```
+
+roi restart backend.
+
+## 13. Evaluation
+
+Evaluation retrieval chay thu cong bang CLI.
+
+Dataset nam trong:
+
+```text
+retrieval_eval_questions
+```
+
+Ket qua luu vao:
+
+```text
+retrieval_eval_results
+```
+
+Lenh:
+
+```powershell
+python -m app.cli eval-retrieval --run-name rag-v1 --k 8 --save
+```
+
+Metrics:
+
+- Precision@K
+- Recall@K
+- MRR
+- NDCG@K
+
+Ground truth ban dau du kien:
+
+- AI sinh 100 cau hoi.
+- Human review lai `relevant_chunk_ids` va `relevant_procedure_ids`.
+
+## 14. Cac Thanh Phan Code Chinh
 
 Backend:
 
 ```text
 apps/api/app/services/chat_service.py
-apps/api/app/services/supabase_vector_service.py
+apps/api/app/services/chat_routing_service.py
+apps/api/app/services/hybrid_retrieval_service.py
+apps/api/app/services/bm25_service.py
+apps/api/app/services/pinecone_vector_service.py
+apps/api/app/services/huggingface_embedding_service.py
+apps/api/app/services/rerank_service.py
+apps/api/app/services/context_packing_service.py
+apps/api/app/services/document_extraction_service.py
+apps/api/app/services/chunking_service.py
+apps/api/app/services/rag_build_service.py
 apps/api/app/services/supabase_repo.py
 apps/api/app/api.py
+apps/api/app/cli.py
 ```
 
 Frontend:
@@ -259,26 +604,43 @@ apps/web/src/App.tsx
 apps/web/src/api.ts
 ```
 
-Database:
+Database/migrations:
 
 ```text
-procedures
-procedure_embeddings
-chat_sessions
-chat_messages
+supabase/migrations/0004_rag_pipeline.sql
 ```
 
-## 11. Tóm Tắt Luồng Tổng Quát
+Runbook:
 
 ```text
-Người dùng hỏi
-  -> Gemini đoán tên thủ tục
-  -> pgvector tìm thủ tục gần nhất
-  -> giữ tối đa 3 thủ tục
-  -> lấy chi tiết từ Supabase
-  -> Gemini tóm tắt từng thủ tục
-  -> Gemini trả lời trực tiếp câu hỏi
-  -> lưu session/message nếu đã đăng nhập
-  -> frontend hiển thị câu trả lời, context, thời gian suy luận, hạn tự xóa
+RAG_RUNBOOK.md
+```
+
+## 15. Tom Tat Luong Tong Quat
+
+```text
+User question
+  -> route/rewrite neu can
+  -> BM25 search tu local cache
+  -> dense search tu Pinecone
+  -> RRF fusion
+  -> lay full chunks tu Supabase
+  -> bge rerank
+  -> pack chunks thanh context [C1]...[C8]
+  -> Gemini generate answer
+  -> frontend hien answer + chunk sources
+```
+
+Ket hop database:
+
+```text
+Supabase
+  giu du lieu goc, markdown, chunks, chat, evaluation
+
+Pinecone
+  giu vector embedding cua chunks de semantic search
+
+BM25 cache file
+  giu lexical index da tokenize de search nhanh luc runtime
 ```
 

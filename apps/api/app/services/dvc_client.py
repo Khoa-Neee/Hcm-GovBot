@@ -85,6 +85,7 @@ class DvcClient:
             )
 
         raw_detail = {
+            "detail_html": html,
             "detail_text": detail_text,
             "modal_fields": modal_fields,
             "execution_methods": execution_methods,

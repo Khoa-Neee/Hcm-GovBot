@@ -251,6 +251,7 @@ class SupabaseRepository:
         initial_question: str,
         procedure_context: list[dict[str, Any]],
         user_id: str,
+        source_context: list[dict[str, Any]] | None = None,
     ) -> str:
         response = (
             self.client.table("chat_sessions")
@@ -260,6 +261,7 @@ class SupabaseRepository:
                     "user_type": user_type,
                     "initial_question": initial_question,
                     "procedure_context": procedure_context,
+                    "source_context": source_context or [],
                 }
             )
             .execute()
@@ -304,6 +306,22 @@ class SupabaseRepository:
 
     def update_chat_context(self, session_id: str, procedure_context: list[dict[str, Any]], user_id: str | None = None) -> None:
         query = self.client.table("chat_sessions").update({"procedure_context": procedure_context}).eq("id", session_id)
+        if user_id:
+            query = query.eq("user_id", user_id)
+        query.execute()
+
+    def update_chat_contexts(
+        self,
+        session_id: str,
+        procedure_context: list[dict[str, Any]],
+        source_context: list[dict[str, Any]],
+        user_id: str | None = None,
+    ) -> None:
+        query = (
+            self.client.table("chat_sessions")
+            .update({"procedure_context": procedure_context, "source_context": source_context})
+            .eq("id", session_id)
+        )
         if user_id:
             query = query.eq("user_id", user_id)
         query.execute()
@@ -521,6 +539,143 @@ class SupabaseRepository:
             query = query.eq("is_active", True)
         response = query.execute()
         return response.count or 0
+
+    def list_procedures_for_documents(
+        self,
+        procedure_group: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        page_size = 500
+        rows: list[dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            current_limit = min(page_size, limit - len(rows)) if limit is not None else page_size
+            if current_limit <= 0:
+                break
+
+            query = (
+                self.client.table("procedures")
+                .select("*")
+                .eq("is_active", True)
+                .order("updated_at", desc=True)
+                .range(offset, offset + current_limit - 1)
+            )
+            if procedure_group:
+                query = query.eq("procedure_group", procedure_group)
+
+            response = query.execute()
+            page_rows = response.data or []
+            rows.extend(page_rows)
+            if len(page_rows) < current_limit:
+                break
+            offset += current_limit
+
+        return rows
+
+    def get_procedure_document(self, procedure_id: str, source_type: str = "html") -> dict[str, Any] | None:
+        response = (
+            self.client.table("procedure_documents")
+            .select("*")
+            .eq("procedure_id", procedure_id)
+            .eq("source_type", source_type)
+            .maybe_single()
+            .execute()
+        )
+        return response.data if response is not None else None
+
+    def upsert_procedure_document(self, document: dict[str, Any]) -> dict[str, Any]:
+        response = (
+            self.client.table("procedure_documents")
+            .upsert(document, on_conflict="procedure_id,source_type")
+            .execute()
+        )
+        return response.data[0] if response.data else document
+
+    def list_chunks_for_procedure(self, procedure_id: str) -> list[dict[str, Any]]:
+        response = (
+            self.client.table("procedure_chunks")
+            .select("*")
+            .eq("procedure_id", procedure_id)
+            .order("chunk_index", desc=False)
+            .execute()
+        )
+        return response.data or []
+
+    def replace_procedure_chunks(self, procedure_id: str, chunks: list[dict[str, Any]]) -> None:
+        existing = self.list_chunks_for_procedure(procedure_id)
+        existing_ids = {row["chunk_id"] for row in existing}
+        new_ids = {row["chunk_id"] for row in chunks}
+        stale_ids = list(existing_ids - new_ids)
+        if stale_ids:
+            self.client.table("procedure_chunks").update({"is_active": False}).in_("chunk_id", stale_ids).execute()
+        if chunks:
+            self.client.table("procedure_chunks").upsert(chunks, on_conflict="chunk_id").execute()
+
+    def list_active_chunks(
+        self,
+        procedure_group: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        page_size = 1000
+        rows: list[dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            current_limit = min(page_size, limit - len(rows)) if limit is not None else page_size
+            if current_limit <= 0:
+                break
+            query = (
+                self.client.table("procedure_chunks")
+                .select("*")
+                .eq("is_active", True)
+                .order("updated_at", desc=True)
+                .range(offset, offset + current_limit - 1)
+            )
+            if procedure_group:
+                query = query.eq("procedure_group", procedure_group)
+            response = query.execute()
+            page_rows = response.data or []
+            rows.extend(page_rows)
+            if len(page_rows) < current_limit:
+                break
+            offset += current_limit
+
+        return rows
+
+    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict[str, Any]]:
+        if not chunk_ids:
+            return []
+        response = (
+            self.client.table("procedure_chunks")
+            .select("*")
+            .in_("chunk_id", chunk_ids)
+            .eq("is_active", True)
+            .execute()
+        )
+        rows = response.data or []
+        order = {chunk_id: index for index, chunk_id in enumerate(chunk_ids)}
+        return sorted(rows, key=lambda row: order.get(row.get("chunk_id"), len(order)))
+
+    def count_active_chunks(self) -> int:
+        response = self.client.table("procedure_chunks").select("id", count="exact").eq("is_active", True).execute()
+        return response.count or 0
+
+    def list_eval_questions(self, reviewed_only: bool = True, limit: int | None = None) -> list[dict[str, Any]]:
+        query = (
+            self.client.table("retrieval_eval_questions")
+            .select("*")
+            .order("created_at", desc=False)
+        )
+        if reviewed_only:
+            query = query.eq("reviewed", True)
+        if limit:
+            query = query.limit(limit)
+        response = query.execute()
+        return response.data or []
+
+    def insert_retrieval_eval_result(self, payload: dict[str, Any]) -> None:
+        self.client.table("retrieval_eval_results").insert(payload).execute()
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()

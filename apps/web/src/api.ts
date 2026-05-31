@@ -87,10 +87,27 @@ export interface ChatProcedureContext {
   summary: string;
 }
 
+export interface ChatSourceChunk {
+  chunk_id: string;
+  citation: string;
+  procedure_id: string;
+  procedure_code: string;
+  procedure_group: ProcedureGroup;
+  name: string;
+  section_name: string;
+  source_url: string;
+  field_name?: string | null;
+  target_audience?: string | null;
+  implementation_agency?: string | null;
+  score?: number | null;
+  text: string;
+}
+
 export interface ChatResponse {
   session_id: string;
   answer: string;
   procedures: ChatProcedureContext[];
+  sources: ChatSourceChunk[];
   inference_seconds?: number | null;
   expires_at?: string | null;
 }
@@ -128,6 +145,7 @@ export interface ChatMessageRecord {
 
 export interface ChatSessionDetail extends ChatSessionListItem {
   procedure_context: ChatProcedureContext[];
+  source_context?: ChatSourceChunk[];
   messages: ChatMessageRecord[];
 }
 
@@ -284,6 +302,8 @@ export async function sendLocalChatMessage(
   initialQuestion: string,
   message: string,
   procedureContext: ChatProcedureContext[],
+  sourceContext: ChatSourceChunk[],
+  history: Array<{ role: "user" | "assistant"; content: string }>,
 ): Promise<ChatResponse> {
   return request(new URL("/api/chat/local/messages", API_BASE_URL), {
     method: "POST",
@@ -292,6 +312,8 @@ export async function sendLocalChatMessage(
       initial_question: initialQuestion,
       message,
       procedure_context: procedureContext,
+      source_context: sourceContext,
+      history,
     }),
   });
 }
@@ -314,11 +336,12 @@ export async function summarizeContextProcedure(
 export async function updateSavedChatContext(
   sessionId: string,
   procedureContext: ChatProcedureContext[],
+  sourceContext: ChatSourceChunk[] = [],
   token?: string,
 ): Promise<ChatProcedureContext[]> {
   return request(new URL(`/api/chat/sessions/${sessionId}/context`, API_BASE_URL), {
     method: "PATCH",
-    body: JSON.stringify({ procedure_context: procedureContext }),
+    body: JSON.stringify({ procedure_context: procedureContext, source_context: sourceContext }),
     token,
   });
 }

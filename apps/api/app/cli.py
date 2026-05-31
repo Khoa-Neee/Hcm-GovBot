@@ -5,8 +5,13 @@ import sys
 
 from app.config import get_settings
 from app.crawler import ProcedureCrawler
+from app.evaluation.retrieval_eval import RetrievalEvaluator
 from app.models import ProcedureGroup
 from app.services.gemini_client import GeminiModelClient
+from app.services.bm25_service import BM25Service
+from app.services.hybrid_retrieval_service import HybridRetrievalService
+from app.services.pinecone_vector_service import PineconeVectorService
+from app.services.rag_build_service import RagBuildService
 from app.services.supabase_repo import SupabaseRepository
 from app.services.supabase_vector_service import SupabaseVectorService
 from app.sync import ProcedureSyncService
@@ -134,6 +139,87 @@ async def llm_test(args: argparse.Namespace) -> None:
     print(json.dumps({"model": args.model or settings.gemini_chat_model, "response": text}, ensure_ascii=False, indent=2))
 
 
+async def rag_build(args: argparse.Namespace) -> None:
+    service = RagBuildService(get_settings())
+    group = None if args.group == "all" else args.group
+    limit = None if args.full else args.limit
+
+    def progress(stats) -> None:
+        print(
+            "[rag-build] "
+            f"seen={stats.seen} documents={stats.documents_upserted} "
+            f"chunks={stats.chunks_upserted} skipped={stats.skipped} failed={stats.failed}",
+            flush=True,
+        )
+
+    stats = service.build_documents_and_chunks(
+        procedure_group=group,
+        limit=limit,
+        force=args.force,
+        progress_every=args.progress_every,
+        progress_callback=progress,
+    )
+    print(json.dumps(stats.__dict__, ensure_ascii=False, indent=2))
+
+
+async def pinecone_sync(args: argparse.Namespace) -> None:
+    service = PineconeVectorService(get_settings())
+    limit = None if args.full else args.limit
+
+    def progress(stats) -> None:
+        print(
+            "[pinecone-sync] "
+            f"seen={stats.seen} upserted={stats.upserted} failed={stats.failed} "
+            f"embedding_dim={stats.embedding_dim}",
+            flush=True,
+        )
+
+    stats = service.sync_chunks(limit=limit, batch_size=args.batch_size, progress_callback=progress)
+    print(json.dumps(stats.__dict__, ensure_ascii=False, indent=2))
+
+
+async def hybrid_search(args: argparse.Namespace) -> None:
+    service = HybridRetrievalService(get_settings())
+    results = service.search(args.query, args.limit)
+    print(
+        json.dumps(
+            [
+                {
+                    "chunk_id": item.get("chunk_id"),
+                    "procedure_code": item.get("procedure_code"),
+                    "name": item.get("name"),
+                    "section_name": item.get("section_name"),
+                    "rerank_score": item.get("rerank_score"),
+                    "rrf_score": item.get("rrf_score"),
+                    "source_url": item.get("source_url"),
+                    "preview": (item.get("chunk_text") or "")[:300],
+                }
+                for item in results
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+async def eval_retrieval(args: argparse.Namespace) -> None:
+    evaluator = RetrievalEvaluator(get_settings())
+    stats = evaluator.run(
+        run_name=args.run_name,
+        k=args.k,
+        limit=args.limit or None,
+        reviewed_only=not args.include_unreviewed,
+        save=args.save,
+    )
+    print(json.dumps(stats.__dict__, ensure_ascii=False, indent=2))
+
+
+async def bm25_build_cache(args: argparse.Namespace) -> None:
+    service = BM25Service(get_settings())
+    stats = service.build_cache()
+    print(json.dumps(stats, ensure_ascii=False, indent=2))
+
+
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -193,6 +279,36 @@ def main() -> None:
     llm_parser = subparsers.add_parser("llm-test")
     llm_parser.add_argument("--model", default="")
     llm_parser.set_defaults(func=llm_test)
+
+    rag_build_parser = subparsers.add_parser("rag-build")
+    rag_build_parser.add_argument("--group", choices=["all", *[item.value for item in ProcedureGroup]], default="all")
+    rag_build_parser.add_argument("--limit", type=int, default=20)
+    rag_build_parser.add_argument("--full", action="store_true")
+    rag_build_parser.add_argument("--force", action="store_true")
+    rag_build_parser.add_argument("--progress-every", type=int, default=25)
+    rag_build_parser.set_defaults(func=rag_build)
+
+    pinecone_parser = subparsers.add_parser("pinecone-sync")
+    pinecone_parser.add_argument("--limit", type=int, default=50)
+    pinecone_parser.add_argument("--full", action="store_true")
+    pinecone_parser.add_argument("--batch-size", type=int, default=32)
+    pinecone_parser.set_defaults(func=pinecone_sync)
+
+    hybrid_parser = subparsers.add_parser("hybrid-search")
+    hybrid_parser.add_argument("query")
+    hybrid_parser.add_argument("--limit", type=int, default=8)
+    hybrid_parser.set_defaults(func=hybrid_search)
+
+    eval_parser = subparsers.add_parser("eval-retrieval")
+    eval_parser.add_argument("--run-name", default="manual")
+    eval_parser.add_argument("--k", type=int, default=8)
+    eval_parser.add_argument("--limit", type=int, default=0)
+    eval_parser.add_argument("--include-unreviewed", action="store_true")
+    eval_parser.add_argument("--save", action="store_true")
+    eval_parser.set_defaults(func=eval_retrieval)
+
+    bm25_parser = subparsers.add_parser("bm25-build-cache")
+    bm25_parser.set_defaults(func=bm25_build_cache)
 
     args = parser.parse_args()
     asyncio.run(args.func(args))

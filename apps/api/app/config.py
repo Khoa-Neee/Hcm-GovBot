@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     gemini_chat_model: str = "gemma-4-31b-it"
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
+    embedding_provider: str = "huggingface"
+    hf_token: str = ""
+    hf_embedding_model: str = "AITeamVN/Vietnamese_Embedding"
+    hf_embedding_device: str = "cpu"
+    hf_embedding_batch_size: int = 16
 
     dvc_base_url: str = "https://thutuc.dichvucong.gov.vn"
     dvc_rest_path: str = "/jsp/rest.jsp"
@@ -44,13 +49,36 @@ class Settings(BaseSettings):
     api_reload: bool = False
     backend_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
-    vector_store: str = Field(default="supabase", pattern="^supabase$")
+    vector_store: str = Field(default="pinecone", pattern="^(supabase|pinecone)$")
+    python_textract_enabled: bool = True
+    chunk_token_limit: int = 512
+    chunk_overlap_tokens: int = 50
+    pinecone_api_key: str = ""
+    pinecone_index_name: str = "hcm-govbot"
+    pinecone_namespace: str = "dev"
+    pinecone_metric: str = "cosine"
+    retrieval_bm25_top_n: int = 30
+    retrieval_dense_top_n: int = 30
+    retrieval_rrf_k: int = 60
+    retrieval_rerank_top_n: int = 8
+    retrieval_final_top_k: int = 8
+    reranker_enabled: bool = True
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_device: str = "cpu"
+    reranker_max_latency_seconds: float = 2.0
+    bm25_tokenizer: str = "underthesea"
+    bm25_cache_path: str = ".rag_cache/bm25_cache.pkl"
+    chat_retrieve_every_turn: bool = True
+    chat_rewrite_when_ambiguous: bool = True
     scheduler_enabled: bool = False
     scheduler_interval_hours: int = 24
     scheduler_run_on_startup: bool = True
     scheduler_startup_delay_seconds: int = 5
     scheduler_mark_inactive: bool = True
     scheduler_vector_force: bool = False
+    scheduler_rag_sync_enabled: bool = False
+    scheduler_pinecone_batch_size: int = 32
+    scheduler_rag_progress_every: int = 100
 
     @property
     def cors_origins(self) -> list[str]:
